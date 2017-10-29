@@ -10,6 +10,15 @@
 \usepackage{alltt}
 \newcommand\hi[1]{{\color{mainorange} \textbf{#1}}}
 
+% Custom unicode symbols
+\usepackage{newunicodechar}
+\newcommand\Warning{%
+ \makebox[1.4em][c]{%
+ \makebox[0pt][c]{\raisebox{.1em}{\small!}}%
+ \makebox[0pt][c]{\color{red}\Large$\bigtriangleup$}}}%
+
+\newunicodechar{⚠}{\Warning}
+
 % Theme
 \usetheme[%
 	subsectionpage=progressbar,
@@ -38,6 +47,24 @@
 \pgfdeclareimage[width=\paperwidth]{bg}{background-dark.pdf}
 \usebackgroundtemplate{\pgfuseimage{bg}}
 \maketitle
+
+% ----------------------------------------------------------------- %
+
+\begin{frame}[c]{println!("{:?}", Self)}
+  Hi! I'm Danilo (@dbrgn).
+
+  \pause
+
+  I live in Rapperswil ({\small \texttt{instagram.com/visitrapperswil}}).
+
+  \pause
+
+  I work at Threema ({\small \texttt{threema.ch}}).
+
+  \pause
+
+  I'm a founding member of Coredump\\hackerspace ({\small \texttt{coredump.ch}}).
+\end{frame}
 
 % ----------------------------------------------------------------- %
 
@@ -135,6 +162,8 @@
   \url{valgrind.org/}
   \end{center}
 \end{frame}
+
+% ----------------------------------------------------------------- %
 
 \section{Parsing ICE Candidates}
 
@@ -272,12 +301,426 @@ pub enum IpAddr {
   \Put(215, 105){\includegraphics[height=1.3cm]{img/alloc.png}}
 \end{frame}
 
+% ----------------------------------------------------------------- %
+
 \section{Rust $\rightleftharpoons$ C}
+
+\begin{frame}[c]{Rust Types in C}
+
+To be able to call Rust from C, we need to:
+
+\begin{itemize}
+  \item Make sure that all involved data types are \texttt{\#[repr(C)]}
+  (simplifying Rust specific types)
+  \pause
+  \item Mark all exposed functions with \texttt{extern "C"} and
+  \texttt{\#[no\_mangle]}
+  \pause
+  \item Compile the crate as a \texttt{cdylib}
+\end{itemize}
+
+\end{frame}
+
+\begin{frame}[c]{Making Rust \#[repr(C)]}
+  If we want to be able to call Rust from C, then all involved data types need
+  to use C representation as memory layout.
+
+  By default, the memory layout in Rust is unspecified. Rust is free to optimize
+  and reorder fields.
+\end{frame}
+
+\begin{frame}[c,fragile]{IceCandidate: Rusty}
+  \begin{minted}[fontsize=\small]{rust}
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct IceCandidate {
+    pub foundation: String,
+    pub component_id: u32,
+    pub transport: Transport,
+    pub priority: u64,
+    pub connection_address: IpAddr,
+    pub port: u16,
+    pub candidate_type: CandidateType,
+    pub rel_addr: Option<IpAddr>,
+    pub rel_port: Option<u16>,
+    pub extensions: Option<HashMap<Vec<u8>, Vec<u8>>>,
+}
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{IceCandidate: C-like}
+  \begin{minted}[fontsize=\small]{rust}
+#[repr(C)]
+pub struct IceCandidateFFI {
+    pub foundation: *const c_char,
+    pub component_id: u32,
+    pub transport: *const c_char,
+    pub priority: u64,
+    pub connection_address: *const c_char,
+    pub port: u16,
+    pub candidate_type: *const c_char,
+    pub rel_addr: *const c_char, // Optional (nullptr)
+    pub rel_port: u16, // Optional (0)
+    pub extensions: KeyValueMap,
+}
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c]{CStr and CString}
+  There are two wrapper types to handle C strings:
+
+  \begin{itemize}
+    \item \texttt{std::ffi::CStr} (borrowed)
+    \item \texttt{std::ffi::CString} (owned)
+  \end{itemize}
+\end{frame}
+
+\begin{frame}[c,fragile]{String to *const c\_char}
+  A Rust \texttt{String} can be converted to a \texttt{*const c\_char} through
+  \texttt{CString}:
+
+  \begin{minted}[fontsize=\small]{rust}
+use std::ffi::CString;
+use libc::c_char;
+
+let s: String = "Hello".to_string();
+let cs: CString = CString::new(s).unwrap();
+let ptr: *const c_char = cs.into_raw();
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{String to *const c\_char}
+  \begin{minted}[fontsize=\small]{rust}
+let s: String = "Hello".to_string();
+let cs: CString = CString::new(s).unwrap();
+let ptr: *const c_char = cs.into_raw();
+  \end{minted}
+
+  ⚠ \textbf{Note:} \texttt{CString} is C compatible but should not be exposed
+  directly through FFI!
+
+  ⚠ \textbf{Note:} \texttt{CString::into\_raw()} transfers memory ownership to a
+  C caller!
+\end{frame}
+
+\begin{frame}[c,fragile]{Custom types to *const c\_char}
+  Our library generates some enums with associated data that cannot be
+  represented directly as a C type. Return it as a C string instead!
+
+  \begin{minted}[fontsize=\footnotesize]{rust}
+pub enum Transport { Udp, Extension(String) }
+
+impl Into<CString> for Transport {
+    fn into(self) -> CString {
+        match self {
+            Transport::Udp => CString::new("udp").unwrap(),
+            Transport::Extension(e) => CString::new(e).unwrap(),
+        }
+    }
+}
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Custom types to *const c\_char}
+  We also return some external types like \texttt{IpAddr}. We cannot impl
+  \texttt{Into<CString>} for those due to the orphan rule\footnote{You can write
+  an impl only if either your crate defined the trait or defined one of the
+  types the impl is for.}.
+
+  Instead, convert them to a C string using the \texttt{ToString} trait!
+
+  \begin{minted}[fontsize=\small]{rust}
+let addr = CString::new(parsed.addr.to_string())
+    .unwrap()
+    .into_raw();
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Optional types to C}
+  C does not have a type directly corresponding to \texttt{Option<T>}. Instead,
+  when dealing with heap allocated types, use (yuck!) null pointers.
+
+  \begin{minted}[fontsize=\small]{rust}
+let optional_ip = match parsed.rel_addr {
+    Some(addr) => {
+        CString::new(addr.to_string()).unwrap().into_raw()
+    },
+    None => std::ptr::null(),
+}
+  \end{minted}
+
+  \pause
+
+  For simpler types, use an "empty" value.
+
+  \begin{minted}[fontsize=\small]{rust}
+let optional_port = parsed.rel_port.unwrap_or(0);
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c]{HashMap to C}
+  Now for some more complex types. Our \texttt{extensions} field has
+  the type \texttt{Option<HashMap<Vec<u8>, Vec<u8>>>}.
+\end{frame}
+
+\begin{frame}[c]{Vec to C}
+  Let's start with \texttt{Vec<T>}.
+
+  \includegraphics[width=.5\textwidth]{img/vec.png}
+\end{frame}
+
+\begin{frame}[c,fragile]{Vec to C: Option 1}
+  Option 1: Shrink \texttt{Vec}, get a pointer, then forget the memory.
+
+  \begin{minted}[fontsize=\small]{rust}
+let mut v: Vec<u8> = vec![1, 2, 3, 4];
+v.shrink_to_fit(); // assert_eq!(v.len(), v.capacity());
+let ptr: *const uint8_t = v.as_ptr();
+std::mem::forget(v);
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Vec to C: Option 2}
+  Option 2: Use \texttt{into\_boxed\_slice} and \texttt{into\_raw}.
+
+  \begin{minted}[fontsize=\small]{rust}
+let v: Vec<u8> = vec![1, 2, 3, 4];
+let v_box: Box<[u8]> = v.into_boxed_slice();
+let ptr: *const [uint8_t] = Box::into_raw(v_box);
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Passing Vec to C}
+  When passing a \texttt{Vec} to C, it is passed as a pointer to the first
+  element.
+
+  C needs to know how long our vector is!
+
+  \begin{minted}[fontsize=\footnotesize]{rust}
+let v: Vec<u8> = vec![1, 2, 3, 4];
+let v_len: usize = v.len();
+let v_ptr: Box<[u8]> = Box::into_raw(v.into_boxed_slice());
+let raw_parts = (v_ptr, v_len);
+  \end{minted}
+
+  In C:
+
+  \begin{minted}[fontsize=\footnotesize]{c}
+for (size_t i = 0; i < rustvec.len; i++) {
+    handle_byte(rustvec.ptr[i]);
+}
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Passing HashMap<Vec<u8>, Vec<u8>{}> to C}
+  Pass a \texttt{HashMap} to C using a \texttt{KeyValuePair} type!
+
+  \begin{minted}[fontsize=\footnotesize]{rust}
+#[repr(C)]
+pub struct KeyValuePair {
+    pub key: *const uint8_t,
+    pub key_len: size_t,
+    pub val: *const uint8_t,
+    pub val_len: size_t,
+}
+
+#[repr(C)]
+pub struct KeyValueMap {
+    pub values: *const KeyValuePair,
+    pub len: size_t,
+}
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{The Parsing Function}
+  Phew! That was quite a lot. Now how do we actually expose this to C?
+
+  ...using an \texttt{extern "C"} function.
+
+  \begin{minted}[fontsize=\small]{rust}
+#[no_mangle]
+pub unsafe extern "C" fn parse_ice_candidate_sdp(
+    sdp: *const c_char
+) -> *const IceCandidateFFI {
+  // ...
+}
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{The Parsing Function: Reading C strings}
+  Inside that function, we first need to convert the C char pointer to a Rust
+  byte slice.
+
+  \begin{minted}[fontsize=\small]{rust}
+// `sdp` is a *const c_char
+if sdp.is_null() {
+    return std::ptr::null();
+}
+let cstr_sdp = CStr::from_ptr(sdp);
+  \end{minted}
+
+Note that we're using \texttt{CStr}, not \texttt{CString}!
+\end{frame}
+
+\begin{frame}[c,fragile]{The Parsing Function: Reading C strings}
+Next, we parse the ICE candidate bytes using the regular Rust parsing function.
+
+  \begin{minted}[fontsize=\small]{rust}
+// Parse
+let bytes = cstr_sdp.to_bytes();
+let parsed: IceCandidate =
+    match candidateparser::parse(bytes) {
+        Some(candidate) => candidate,
+        None => return ptr::null(),
+    };
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{The Parsing Function: Reading C strings}
+  Finally we convert the Rust type to the FFI type (using the techniques
+  explained previously) and return a pointer to that.
+
+  \begin{minted}[fontsize=\small]{rust}
+// Convert to FFI representation
+let ffi_candidate: IceCandidateFFI = ...;
+
+// Return a pointer
+Box::into_raw(Box::new(ffi_candidate))
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Compiling as a C Library}
+  To compile the Rust crate as a C compatible shared library, put this in your
+  \texttt{Cargo.toml}:
+
+  \begin{minted}[fontsize=\small]{rust}
+[lib]
+name = "candidateparser_ffi"
+crate-type = ["cdylib"]
+  \end{minted}
+
+  This will result in a \texttt{candidateparser\_ffi.so} file.
+\end{frame}
+
+\begin{frame}[c]{Generating a Header File}
+  To be able to use the library from C, you also need a header file.
+
+  You can write such a header file by hand, or you can generate it at compile
+  time using the \texttt{cbindgen} crate\footnote{\url{https://github.com/eqrion/cbindgen}}.
+
+\end{frame}
+
+\begin{frame}[c,fragile]{Calling the Parser from C}
+  Include the header file and simply call the function:
+
+  \begin{minted}[fontsize=\small]{c}
+#include "candidateparser.h"
+const IceCandidateFFI *candidate =
+    parse_ice_candidate_sdp(sdp);
+  \end{minted}
+
+  Then link against the shared library when compiling:
+
+  \begin{minted}[fontsize=\small]{bash}
+$ clang example.c -o example \
+    -L ../target/debug -l candidateparser_ffi \
+    -Wall -Wextra -g
+  \end{minted}
+
+  A full example is available in the \texttt{candidateparser-ffi} crate on
+  Github.
+\end{frame}
+
+\begin{frame}[c]{Cleaning up}
+  Since we passed pointers from Rust to C, that memory cannot be freed by C!
+
+  If we don't free it, we end up with memory leaks.
+
+  We need to pass the pointers back to Rust to free the memory.
+\end{frame}
+
+\begin{frame}[c,fragile]{Cleaning up}
+
+  First, create another function that accepts a pointer to an
+  \texttt{IceCandidateFFI} struct.
+
+  \begin{minted}[fontsize=\small]{rust}
+#[no_mangle]
+pub unsafe extern "C" fn free_ice_candidate(
+    ptr: *const IceCandidateFFI
+) {
+    if ptr.is_null() { return; }
+    // ...
+}
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Cleaning up}
+
+  Now we create an owned \texttt{Box} from the pointer.
+
+  \begin{minted}[fontsize=\small]{rust}
+// Cast `*const T` to `*mut T`
+let ptr: ptr as *mut IceCandidateFFI;
+
+// Reconstruct box
+let candidate: Box<IceCandidateFFI> = Box::from_raw(ptr);
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Cleaning up Strings}
+
+  Because the struct also contains pointers, we reconstruct Rust owned types
+  from these pointers. The memory is freed as soon as those objects go out of
+  scope!
+
+  For strings:
+
+  \begin{minted}[fontsize=\small]{rust}
+CString::from_raw(candidate.foundation as *mut c_char);
+  \end{minted}
+
+  For nullable strings:
+
+  \begin{minted}[fontsize=\small]{rust}
+if !candidate.rel_addr.is_null() {
+    CString::from_raw(candidate.rel_addr as *mut c_char);
+}
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Cleaning up Vec / KeyValueMap}
+
+  Reclaiming the memory for our \texttt{KeyValueMap} is a bit more complex:
+
+  \begin{minted}[fontsize=\footnotesize]{rust}
+let e = candidate.extensions;
+let pairs = Vec::from_raw_parts(e.values as *mut KeyValuePair,
+                                e.len as usize, e.len as usize);
+for p in pairs {
+    Vec::from_raw_parts(p.key as *mut uint8_t, // Start
+                        p.key_len as usize,    // Length
+                        p.key_len as usize);   // Capacity
+    Vec::from_raw_parts(p.val as *mut uint8_t, // Start
+                        p.val_len as usize,    // Length
+                        p.val_len as usize);   // Capacity
+}
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c]{We Did It!}
+  \centering
+  Whew, that was a bumpy ride!
+
+  \includegraphics[width=.6\textwidth]{img/bump.png}
+\end{frame}
+
+% ----------------------------------------------------------------- %
 
 \section{Rust $\rightleftharpoons$ Java}
 
-\section{Questions?}
+% ----------------------------------------------------------------- %
 
+\section{Questions?}
 
 % ----------------------------------------------------------------- %
 
