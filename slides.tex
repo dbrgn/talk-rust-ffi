@@ -718,6 +718,213 @@ for p in pairs {
 
 \section{Rust $\rightleftharpoons$ Java}
 
+\begin{frame}[c]{We Did It!}
+  Ok, now for Java.
+
+  Unfortunately we can't reuse the code we wrote for C.
+
+  But we can reuse the concepts!
+\end{frame}
+
+\begin{frame}[c]{JNI}
+  The "classic" way to talk to Java from external languages is through JNI (Java
+  Native Interface).
+
+  There are newer options by now (namely JNA), but as far as I know there are
+  issues with that if you want to run your code on Android.
+\end{frame}
+
+\begin{frame}[c,fragile]{Preparations}
+  First, we have to write classes for all Java types we're going to use. Since
+  it's Java, it's a bit verbose.
+
+  \begin{minted}[fontsize=\footnotesize]{java}
+package ch.dbrgn.candidateparser;
+import java.util.HashMap;
+
+public class IceCandidate {
+    // Non-null fields
+    private String foundation;
+    private long componentId;
+    private String transport;
+    private long priority;
+    private String connectionAddress;
+    private int port;
+    private String candidateType;
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Preparations}
+  \begin{minted}[fontsize=\footnotesize]{java}
+    // Extensions
+    private HashMap<String, String> extensions = new HashMap<>();
+
+    // Nullable fields
+    private String relAddr = null;
+    private Integer relPort = null;
+
+    public IceCandidate(String foundation, long componentId,
+                        String transport, long priority,
+                        String connectionAddress, int port,
+                        String candidateType) {
+        this.foundation = foundation;
+        this.componentId = componentId;
+        // ...
+    }
+
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Preparations}
+  Next, we'll write the "interface" for the parser class.
+
+  \begin{minted}[fontsize=\footnotesize]{java}
+package ch.dbrgn.candidateparser;
+
+public class CandidateParser {
+    static {
+        System.loadLibrary("candidateparser_jni");
+    }
+
+    public static native IceCandidate parseSdp(String sdp);
+}
+  \end{minted}
+
+Note the \texttt{native} modifier.
+\end{frame}
+
+\begin{frame}[c,fragile]{Generating JNI Headers}
+  To generate the JNI headers, we first compile the \texttt{.java} files:
+
+  \begin{minted}[fontsize=\footnotesize]{bash}
+$ javac -classpath app/src/main/java/ \
+    app/src/main/java/ch/dbrgn/candidateparser/IceCandidate.java
+$ javac -classpath app/src/main/java/ \
+    app/src/main/java/ch/dbrgn/candidateparser/CandidateParser.java
+  \end{minted}
+
+  Then use the \texttt{javah} tool to generate the JNI header.
+
+  \begin{minted}[fontsize=\footnotesize]{bash}
+$ javah -classpath app/src/main/java/ \
+    -o CandidateParserJNI.h \
+    ch.dbrgn.candidateparser.CandidateParser
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Generating JNI Headers}
+  The header file (minus some boilerplate):
+  \begin{minted}[fontsize=\footnotesize]{c}
+#include <jni.h>
+
+/*
+ * Class:     ch_dbrgn_candidateparser_CandidateParser
+ * Method:    parseSdp
+ * Signature: (Ljava/lang/String;)Lch/dbrgn/candidateparser
+ *                                                     /IceCandidate;
+ */
+JNIEXPORT jobject JNICALL
+  Java_ch_dbrgn_candidateparser_CandidateParser_parseSdp
+  (JNIEnv *, jclass, jstring);
+  \end{minted}
+
+\end{frame}
+
+\begin{frame}[c,fragile]{Rust Bindings for JNI}
+  Create a new library and add the
+  \texttt{jni}\footnote{\url{https://github.com/prevoty/jni-rs}} crate as
+  dependency.
+
+  \begin{minted}[fontsize=\small]{ini}
+[dependencies]
+jni = "0.6"
+
+[lib]
+crate_type = ["dylib"]
+  \end{minted}
+
+\end{frame}
+
+\begin{frame}[c,fragile]{lib.rs}
+  In \texttt{lib.rs}, create a function with the same name as the function in
+  the JNI header.
+
+  \begin{minted}[fontsize=\footnotesize]{rust}
+#[no_mangle]
+#[allow(non_snake_case)]
+pub extern "system"
+fn Java_ch_dbrgn_candidateparser_CandidateParser_parseSdp(
+    env: JNIEnv,
+    _class: JClass,
+    input: JString)
+    -> jobject {
+
+    // ...
+
+}
+  \end{minted}
+
+\end{frame}
+
+\begin{frame}[c,fragile]{Converting parameters}
+  To get a reference to a Java String we need to access it through the
+  \texttt{JNIEnv} instance and convert it to a Rust \texttt{String}.
+
+  \begin{minted}[fontsize=\footnotesize]{rust}
+let sdp: String = env.get_string(input).unwrap().into();
+  \end{minted}
+
+  Now we can simply pass it to the regular Rust function!
+
+  \begin{minted}[fontsize=\footnotesize]{rust}
+let candidate = match candidateparser::parse(sdp.as_bytes()) {
+    Some(cand) => cand,
+    None => return std::ptr::null_mut() as *mut _jobject, // hack
+};
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Creating New Java Objects}
+
+  Since we want to return the parsed candidate to Java, we want to instantiate
+  the Java \texttt{IceCandidate} class.
+
+  \begin{minted}[fontsize=\footnotesize]{rust}
+let obj: JObject = env.new_object(
+  // Classpath
+  "ch/dbrgn/candidateparser/IceCandidate",
+  // Signature
+  "(Ljava/lang/String;JLjava/lang/String;J
+    Ljava/lang/String;ILjava/lang/String;)V",
+  // Argument slice containing `JValue`s
+  &args
+).unwrap();
+  \end{minted}
+
+  JNI signature syntax:\\
+  {\footnotesize https://docs.oracle.com/javase/8/docs/technotes/guides/jni/spec/types.html}
+
+\end{frame}
+
+\begin{frame}[c,fragile]{Creating New Java Objects}
+  The arguments need to be wrapped in JNI wrapper types. This makes sure that
+  the JVM GC knows about them. Two examples:
+
+  \begin{minted}[fontsize=\footnotesize]{rust}
+let component_id = JValue::Long(candidate.component_id as jlong);
+
+let foundation = JValue::Object(
+    env.new_string(&candidate.foundation).unwrap().into()
+);
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Calling Java Functions}
+  TODO
+  \begin{minted}[fontsize=\footnotesize]{rust}
+  \end{minted}
+\end{frame}
+
 % ----------------------------------------------------------------- %
 
 \section{Questions?}
