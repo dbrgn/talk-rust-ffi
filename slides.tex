@@ -243,6 +243,8 @@ pub struct IceCandidate {
 }
   \end{minted}
 
+  \pause
+
   \Put(165, 360){\includegraphics[height=1.4cm]{img/alloc.png}}
   \Put(175, 305){\includegraphics[height=1.4cm]{img/unknown.png}}
   \Put(205, 250){\includegraphics[height=1.4cm]{img/unknown.png}}
@@ -388,18 +390,12 @@ let ptr: *const c_char = cs.into_raw();
   \end{minted}
 \end{frame}
 
-\begin{frame}[c,fragile]{String to *const c\_char}
-  \begin{minted}[fontsize=\small]{rust}
-let s: String = "Hello".to_string();
-let cs: CString = CString::new(s).unwrap();
-let ptr: *const c_char = cs.into_raw();
-  \end{minted}
-
-  ⚠ \textbf{Note:} \texttt{CString} is C compatible but should not be exposed
-  directly through FFI!
+\begin{frame}[c]{CString}
+  ⚠ \textbf{Note:} \texttt{CString} enables C compatibility but should not be
+  exposed directly through FFI!
 
   ⚠ \textbf{Note:} \texttt{CString::into\_raw()} transfers memory ownership to a
-  C caller!
+  C caller!\\(The alternative would be \texttt{CString::as\_ptr()})
 \end{frame}
 
 \begin{frame}[c,fragile]{Custom types to *const c\_char}
@@ -718,12 +714,12 @@ for p in pairs {
 
 \section{Rust $\rightleftharpoons$ Java}
 
-\begin{frame}[c]{We Did It!}
+\begin{frame}[c]{Hello Java}
   Ok, now for Java.
 
   Unfortunately we can't reuse the code we wrote for C.
 
-  But we can reuse the concepts!
+  But we can reuse some of the concepts!
 \end{frame}
 
 \begin{frame}[c]{JNI}
@@ -772,6 +768,7 @@ public class IceCandidate {
         // ...
     }
 
+    // ...
   \end{minted}
 \end{frame}
 
@@ -803,7 +800,7 @@ $ javac -classpath app/src/main/java/ \
     app/src/main/java/ch/dbrgn/candidateparser/CandidateParser.java
   \end{minted}
 
-  Then use the \texttt{javah} tool to generate the JNI header.
+  Then use the \texttt{javah} tool to generate the headerfile.
 
   \begin{minted}[fontsize=\footnotesize]{bash}
 $ javah -classpath app/src/main/java/ \
@@ -867,8 +864,9 @@ fn Java_ch_dbrgn_candidateparser_CandidateParser_parseSdp(
 \end{frame}
 
 \begin{frame}[c,fragile]{Converting parameters}
-  To get a reference to a Java String we need to access it through the
-  \texttt{JNIEnv} instance and convert it to a Rust \texttt{String}.
+  To get a reference to a Java String passed in as an argument we need to access
+  it through the \texttt{JNIEnv} instance and convert it to a Rust
+  \texttt{String}.
 
   \begin{minted}[fontsize=\footnotesize]{rust}
 let sdp: String = env.get_string(input).unwrap().into();
@@ -908,10 +906,12 @@ let obj: JObject = env.new_object(
 
 \begin{frame}[c,fragile]{Creating New Java Objects}
   The arguments need to be wrapped in JNI wrapper types. This makes sure that
-  the JVM GC knows about them. Two examples:
+  the JVM GC knows about them (memory ownership!). Two examples:
 
   \begin{minted}[fontsize=\footnotesize]{rust}
-let component_id = JValue::Long(candidate.component_id as jlong);
+let component_id = JValue::Long(
+    candidate.component_id as jlong
+);
 
 let foundation = JValue::Object(
     env.new_string(&candidate.foundation).unwrap().into()
@@ -919,15 +919,90 @@ let foundation = JValue::Object(
   \end{minted}
 \end{frame}
 
-\begin{frame}[c,fragile]{Calling Java Functions}
-  TODO
-  \begin{minted}[fontsize=\footnotesize]{rust}
+\begin{frame}[c,fragile]{Inspecting Classfiles}
+  Hint: You can use \texttt{javap} to find the signature descriptor for a
+  method.
+
+  \begin{minted}[fontsize=\footnotesize]{bash}
+$ javap -s -classpath app/src/main/java \
+    ch.dbrgn.candidateparser.IceCandidate
+Compiled from "IceCandidate.java"
+public class ch.dbrgn.candidateparser.IceCandidate {
+  public ch.dbrgn.candidateparser.IceCandidate();
+    descriptor: ()V
+
+  public ch.dbrgn.candidateparser.IceCandidate(java.lang.String, long, java.lang.String, long, java.lang.String, int, java.lang.String);
+    descriptor: (Ljava/lang/String;JLjava/lang/String;JLjava/lang/String;ILjava/lang/String;)V
+
+  public java.lang.String getFoundation();
+    descriptor: ()Ljava/lang/String;
+...
   \end{minted}
+
+\end{frame}
+
+\begin{frame}[c,fragile]{Calling Java Methods}
+  You can also call methods on Java objects through the \texttt{JNIEnv}:
+
+  \begin{minted}[fontsize=\footnotesize]{rust}
+let call_result = env.call_method(
+    // Object containing the method
+    obj,
+    // Method name
+    "setRelPort",
+    // Method signature
+    "(I)V",
+    // Arguments
+    &[JValue::Int(port as i32)]
+);
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c]{Memory Ownership}
+  Since all allocated memory is created through the \texttt{JNIEnv}, the
+  original Rust memory can be freed (on drop) and the Java memory is tracked by
+  the GC.
+
+  We don't need an explicit \texttt{free\_ice\_candidate} function.
 \end{frame}
 
 % ----------------------------------------------------------------- %
 
 \section{Questions?}
+
+% ----------------------------------------------------------------- %
+
+\begin{frame}[c,fragile]{Appendix: Android Logging}
+  You can log directly to the Android adb log through standard Rust logging
+  facilities:
+
+  Cargo.toml:
+
+  \begin{minted}[fontsize=\small]{ini}
+[dependencies]
+log = "0.3"
+android_logger = "0.3"
+  \end{minted}
+\end{frame}
+
+\begin{frame}[c,fragile]{Appendix: Android Logging}
+  You can log directly to the Android adb log through standard Rust logging
+  facilities:
+
+  lib.rs:
+
+  \begin{minted}[fontsize=\small]{rust}
+#[macro_use]
+extern crate log;
+#[cfg(target_os = "android")]
+extern crate android_logger;
+
+// ...
+
+#[cfg(target_os = "android")]
+android_logger::init_once(log::LogLevel::Info);
+  \end{minted}
+\end{frame}
 
 % ----------------------------------------------------------------- %
 
@@ -940,7 +1015,9 @@ let foundation = JValue::Object(
 	{\Huge Thank you!}\\
 	{\normalsize \url{www.coredump.ch}}\\
 	\end{centering}
+  {\small Slides: \url{github.com/rust-zurichsee/meetups/}}\\
+  {\small Candidateparser library: \url{github.com/dbrgn/candidateparser/}}
+  \vspace{3cm}
 \end{frame}
 }
-
 \end{document}
