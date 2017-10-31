@@ -489,7 +489,7 @@ let ptr: *const [uint8_t] = Box::into_raw(v_box);
   When passing a \texttt{Vec} to C, it is passed as a pointer to the first
   element.
 
-  C needs to know how long our vector is!
+  C also needs to know how long our vector is!
 
   \begin{minted}[fontsize=\footnotesize]{rust}
 let v: Vec<u8> = vec![1, 2, 3, 4];
@@ -512,17 +512,17 @@ for (size_t i = 0; i < rustvec.len; i++) {
 
   \begin{minted}[fontsize=\footnotesize]{rust}
 #[repr(C)]
+pub struct KeyValueMap {
+    pub values: *const KeyValuePair,
+    pub len: size_t,
+}
+
+#[repr(C)]
 pub struct KeyValuePair {
     pub key: *const uint8_t,
     pub key_len: size_t,
     pub val: *const uint8_t,
     pub val_len: size_t,
-}
-
-#[repr(C)]
-pub struct KeyValueMap {
-    pub values: *const KeyValuePair,
-    pub len: size_t,
 }
   \end{minted}
 \end{frame}
@@ -624,6 +624,11 @@ $ clang example.c -o example \
 
   A full example is available in the \texttt{candidateparser-ffi} crate on
   Github.
+\end{frame}
+
+\begin{frame}[c]{Cleaning up}
+  \centering
+  \includegraphics[width=.8\textwidth]{img/memory-leaks.jpg}
 \end{frame}
 
 \begin{frame}[c]{Cleaning up}
