@@ -4,6 +4,7 @@
 \usepackage{color}
 \definecolor{mainorange}{HTML}{EC811B}
 \definecolor{lightgrey}{HTML}{888888}
+\definecolor{almostwhite}{HTML}{FEFEFE}
 
 % Syntax highlighting
 \usepackage{minted}
@@ -27,6 +28,7 @@
 ]{metropolis}
 
 % Customization
+\usepackage{pagecolor}
 \setbeamertemplate{section in toc}[sections numbered]
 \setbeamerfont{title}{size=\fontsize{30}{30}}
 \setbeamerfont{block title}{size=\large}
@@ -45,6 +47,7 @@
 \begin{document}
 
 \pgfdeclareimage[width=\paperwidth]{bg}{background-dark.pdf}
+\pagecolor{almostwhite}  % Prevent speakerdeck from optimizing away the bg color
 \usebackgroundtemplate{\pgfuseimage{bg}}
 \maketitle
 
